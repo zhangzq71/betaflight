@@ -29,6 +29,7 @@
 
 #include "drivers/display.h"
 #include "drivers/max7456.h"
+#include "drivers/osd.h"
 
 #include "config/config.h"
 
@@ -86,17 +87,21 @@ static int screenSize(const displayPort_t *displayPort)
     return maxScreenSize;
 }
 
-static int writeString(displayPort_t *displayPort, uint8_t x, uint8_t y, const char *s)
+static int writeString(displayPort_t *displayPort, uint8_t x, uint8_t y, uint8_t attr, const char *s)
 {
     UNUSED(displayPort);
+    UNUSED(attr);
+
     max7456Write(x, y, s);
 
     return 0;
 }
 
-static int writeChar(displayPort_t *displayPort, uint8_t x, uint8_t y, uint8_t c)
+static int writeChar(displayPort_t *displayPort, uint8_t x, uint8_t y, uint8_t attr, uint8_t c)
 {
     UNUSED(displayPort);
+    UNUSED(attr);
+
     max7456WriteChar(x, y, c);
 
     return 0;
@@ -152,6 +157,13 @@ static bool layerCopy(displayPort_t *displayPort, displayPortLayer_e destLayer, 
     return max7456LayerCopy(destLayer, sourceLayer);
 }
 
+static bool writeFontCharacter(displayPort_t *instance, uint16_t addr, const osdCharacter_t *chr)
+{
+    UNUSED(instance);
+
+    return max7456WriteNvm(addr, (const uint8_t *)chr);
+}
+
 static const displayPortVTable_t max7456VTable = {
     .grab = grab,
     .release = release,
@@ -168,6 +180,7 @@ static const displayPortVTable_t max7456VTable = {
     .layerSupported = layerSupported,
     .layerSelect = layerSelect,
     .layerCopy = layerCopy,
+    .writeFontCharacter = writeFontCharacter,
 };
 
 displayPort_t *max7456DisplayPortInit(const vcdProfile_t *vcdProfile)

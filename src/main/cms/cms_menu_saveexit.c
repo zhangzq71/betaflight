@@ -44,14 +44,13 @@ static const OSD_Entry cmsx_menuSaveExitEntries[] =
     { NULL, OME_END, NULL, NULL, 0 }
 };
 
-CMS_Menu cmsx_menuSaveExit = {
+static CMS_Menu cmsx_menuSaveExit = {
 #ifdef CMS_MENU_DEBUG
     .GUARD_text = "MENUSAVE",
     .GUARD_type = OME_MENU,
 #endif
     .onEnter = NULL,
     .onExit = NULL,
-    .checkRedirect = NULL,
     .onDisplayUpdate = NULL,
     .entries = cmsx_menuSaveExitEntries
 };
@@ -65,17 +64,23 @@ static const OSD_Entry cmsx_menuSaveExitRebootEntries[] =
     { NULL, OME_END, NULL, NULL, 0 }
 };
 
-CMS_Menu cmsx_menuSaveExitReboot = {
+static CMS_Menu cmsx_menuSaveExitReboot = {
 #ifdef CMS_MENU_DEBUG
     .GUARD_text = "MENUSAVE",
     .GUARD_type = OME_MENU,
 #endif
     .onEnter = NULL,
     .onExit = NULL,
-    .checkRedirect = NULL,
     .onDisplayUpdate = NULL,
     .entries = cmsx_menuSaveExitRebootEntries
 };
 
-
+CMS_Menu *getSaveExitMenu(void)
+{
+   if (getRebootRequired()) {
+        return &cmsx_menuSaveExitReboot;
+    } else {
+        return &cmsx_menuSaveExit;
+    }
+}
 #endif

@@ -862,3 +862,22 @@ bool isRssiConfigured(void)
 {
     return rssiSource != RSSI_SOURCE_NONE;
 }
+
+bool rxGetFrameDelta(timeDelta_t *deltaUs)
+{
+    static timeUs_t previousFrameTimeUs = 0;
+    bool result = false;
+
+    *deltaUs = 0;
+    if (rxRuntimeState.rcFrameTimeUsFn) {
+        const timeUs_t frameTimeUs = rxRuntimeState.rcFrameTimeUsFn();
+        if (frameTimeUs) {
+            if (previousFrameTimeUs) {
+                *deltaUs = cmpTimeUs(frameTimeUs, previousFrameTimeUs);
+                result = true;
+            }
+            previousFrameTimeUs = frameTimeUs;
+        }
+    }
+    return result;  // No frame delta function available for protocol type or frames have stopped
+}

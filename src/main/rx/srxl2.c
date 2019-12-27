@@ -112,6 +112,8 @@ static bool telemetryRequested = false;
 
 static uint8_t telemetryFrame[22];
 
+static timeUs_t lastRcFrameTimeUs = 0;
+
 uint8_t globalResult = 0;
 
 /* handshake protocol
@@ -168,18 +170,17 @@ bool srxl2ProcessHandshake(const Srxl2Header* header)
 }
 
 void srxl2ProcessChannelData(const Srxl2ChannelDataHeader* channelData, rxRuntimeState_t *rxRuntimeState) {
+    globalResult = RX_FRAME_COMPLETE;
+
     if (channelData->rssi >= 0) {
         const int rssiPercent = channelData->rssi;
         setRssi(scaleRange(rssiPercent, 0, 100, 0, RSSI_MAX_VALUE), RSSI_SOURCE_RX_PROTOCOL);
-    } else {
-        // If dBm value provided, cant properly convert to % without knowing the receivers sensitivity range. Fix at 50% for now.
-        setRssi(RSSI_MAX_VALUE / 2, RSSI_SOURCE_RX_PROTOCOL);
     }
 
-    if (channelData->rssi == 0) {
-        globalResult = RX_FRAME_FAILSAFE;
-    } else {
-        globalResult = RX_FRAME_COMPLETE;
+    //If receiver is in a connected state, and a packet is missed, the channel mask will be 0.
+    if (!channelData->channelMask.u32) {
+        globalResult |= RX_FRAME_DROPPED;
+        return;
     }
 
     const uint16_t *frameChannels = (const uint16_t *) (channelData + 1);
@@ -209,7 +210,7 @@ bool srxl2ProcessControlData(const Srxl2Header* header, rxRuntimeState_t *rxRunt
         break;
 
     case FailsafeChannelData: {
-        srxl2ProcessChannelData((const Srxl2ChannelDataHeader *) (controlData + 1), rxRuntimeState);
+        globalResult |= RX_FRAME_FAILSAFE;
         setRssiDirect(0, RSSI_SOURCE_RX_PROTOCOL);
         // DEBUG_PRINTF("fs channel data\r\n");
     } break;
@@ -424,6 +425,12 @@ static uint8_t srxl2FrameStatus(rxRuntimeState_t *rxRuntimeState)
         result |= RX_FRAME_PROCESSING_REQUIRED;
     }
 
+    if (result == RX_FRAME_COMPLETE || result == (RX_FRAME_COMPLETE | RX_FRAME_PROCESSING_REQUIRED)) {
+        lastRcFrameTimeUs = lastIdleTimestamp;
+    } else {
+        lastRcFrameTimeUs = 0;  // We received a frame but it wasn't valid new channel data
+    }
+
     return result;
 }
 
@@ -473,6 +480,13 @@ void srxl2RxWriteData(const void *data, int len)
     writeBufferIdx = len;
 }
 
+static timeUs_t srxl2FrameTimeUs(void)
+{
+    const timeUs_t result = lastRcFrameTimeUs;
+    lastRcFrameTimeUs = 0;
+    return result;
+}
+
 bool srxl2RxInit(const rxConfig_t *rxConfig, rxRuntimeState_t *rxRuntimeState)
 {
     static uint16_t channelData[SRXL2_MAX_CHANNELS];
@@ -489,6 +503,7 @@ bool srxl2RxInit(const rxConfig_t *rxConfig, rxRuntimeState_t *rxRuntimeState)
 
     rxRuntimeState->rcReadRawFn = srxl2ReadRawRC;
     rxRuntimeState->rcFrameStatusFn = srxl2FrameStatus;
+    rxRuntimeState->rcFrameTimeUsFn = srxl2FrameTimeUs;
     rxRuntimeState->rcProcessFrameFn = srxl2ProcessFrame;
 
     const serialPortConfig_t *portConfig = findSerialPortConfig(FUNCTION_RX_SERIAL);

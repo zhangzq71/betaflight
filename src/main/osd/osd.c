@@ -54,7 +54,7 @@
 
 #include "drivers/display.h"
 #include "drivers/flash.h"
-#include "drivers/max7456_symbols.h"
+#include "drivers/osd_symbols.h"
 #include "drivers/sdcard.h"
 #include "drivers/time.h"
 
@@ -91,6 +91,12 @@
 #include "hardware_revision.h"
 #endif
 
+typedef enum {
+    OSD_LOGO_ARMING_OFF,
+    OSD_LOGO_ARMING_ON,
+    OSD_LOGO_ARMING_FIRST
+} osd_logo_on_arming_e;
+
 const char * const osdTimerSourceNames[] = {
     "ON TIME  ",
     "TOTAL ARM",
@@ -120,6 +126,7 @@ static uint8_t armState;
 static uint8_t osdProfile = 1;
 #endif
 static displayPort_t *osdDisplayPort;
+static bool osdIsReady;
 
 static bool suppressStatsDisplay = false;
 static uint8_t osdStatsRowCount = 0;
@@ -130,7 +137,11 @@ static bool backgroundLayerSupported = false;
 escSensorData_t *osdEscDataCombined;
 #endif
 
-PG_REGISTER_WITH_RESET_FN(osdConfig_t, osdConfig, PG_OSD_CONFIG, 6);
+STATIC_ASSERT(OSD_POS_MAX == OSD_POS(31,31), OSD_POS_MAX_incorrect);
+
+PG_REGISTER_WITH_RESET_FN(osdConfig_t, osdConfig, PG_OSD_CONFIG, 7);
+
+PG_REGISTER_WITH_RESET_FN(osdElementConfig_t, osdElementConfig, PG_OSD_ELEMENT_CONFIG, 0);
 
 // Controls the display order of the OSD post-flight statistics.
 // Adjust the ordering here to control how the post-flight stats are presented.
@@ -261,23 +272,6 @@ const uint16_t osdTimerDefault[OSD_TIMER_COUNT] = {
 
 void pgResetFn_osdConfig(osdConfig_t *osdConfig)
 {
-    // Position elements near centre of screen and disabled by default
-    for (int i = 0; i < OSD_ITEM_COUNT; i++) {
-        osdConfig->item_pos[i] = OSD_POS(10, 7);
-    }
-
-    // Always enable warnings elements by default
-    uint16_t profileFlags = 0;
-    for (unsigned i = 1; i <= OSD_PROFILE_COUNT; i++) {
-        profileFlags |= OSD_PROFILE_FLAG(i);
-    }
-    osdConfig->item_pos[OSD_WARNINGS] = OSD_POS(9, 10) | profileFlags;
-
-    // Default to old fixed positions for these elements
-    osdConfig->item_pos[OSD_CROSSHAIRS]         = OSD_POS(13, 6);
-    osdConfig->item_pos[OSD_ARTIFICIAL_HORIZON] = OSD_POS(14, 2);
-    osdConfig->item_pos[OSD_HORIZON_SIDEBARS]   = OSD_POS(14, 6);
-
     // Enable the default stats
     osdConfig->enabled_stats = 0; // reset all to off and enable only a few initially
     osdStatSetState(OSD_STAT_MAX_SPEED, true);
@@ -332,6 +326,32 @@ void pgResetFn_osdConfig(osdConfig_t *osdConfig)
     osdConfig->displayPortDevice = OSD_DISPLAYPORT_DEVICE_AUTO;
 
     osdConfig->distance_alarm = 0;
+    osdConfig->logo_on_arming = OSD_LOGO_ARMING_OFF;
+    osdConfig->logo_on_arming_duration = 5;  // 0.5 seconds
+
+    osdConfig->camera_frame_width = 24;
+    osdConfig->camera_frame_height = 11;
+}
+
+void pgResetFn_osdElementConfig(osdElementConfig_t *osdElementConfig)
+{
+    // Position elements near centre of screen and disabled by default
+    for (int i = 0; i < OSD_ITEM_COUNT; i++) {
+        osdElementConfig->item_pos[i] = OSD_POS(10, 7);
+    }
+
+    // Always enable warnings elements by default
+    uint16_t profileFlags = 0;
+    for (unsigned i = 1; i <= OSD_PROFILE_COUNT; i++) {
+        profileFlags |= OSD_PROFILE_FLAG(i);
+    }
+    osdElementConfig->item_pos[OSD_WARNINGS] = OSD_POS(9, 10) | profileFlags;
+
+    // Default to old fixed positions for these elements
+    osdElementConfig->item_pos[OSD_CROSSHAIRS]         = OSD_POS(13, 6);
+    osdElementConfig->item_pos[OSD_ARTIFICIAL_HORIZON] = OSD_POS(14, 2);
+    osdElementConfig->item_pos[OSD_HORIZON_SIDEBARS]   = OSD_POS(14, 6);
+    osdElementConfig->item_pos[OSD_CAMERA_FRAME]       = OSD_POS(3, 1);
 }
 
 static void osdDrawLogo(int x, int y)
@@ -341,52 +361,40 @@ static void osdDrawLogo(int x, int y)
     for (int row = 0; row < 4; row++) {
         for (int column = 0; column < 24; column++) {
             if (fontOffset <= SYM_END_OF_FONT)
-                displayWriteChar(osdDisplayPort, x + column, y + row, fontOffset++);
+                displayWriteChar(osdDisplayPort, x + column, y + row, DISPLAYPORT_ATTR_NONE, fontOffset++);
         }
     }
 }
 
-void osdInit(displayPort_t *osdDisplayPortToUse)
+static void osdCompleteInitialization(void)
 {
-    if (!osdDisplayPortToUse) {
-        return;
-    }
-
-    STATIC_ASSERT(OSD_POS_MAX == OSD_POS(31,31), OSD_POS_MAX_incorrect);
-
-    osdDisplayPort = osdDisplayPortToUse;
-#ifdef USE_CMS
-    cmsDisplayPortRegister(osdDisplayPort);
-#endif
-
-    backgroundLayerSupported = displayLayerSupported(osdDisplayPort, DISPLAYPORT_LAYER_BACKGROUND);
-    displayLayerSelect(osdDisplayPort, DISPLAYPORT_LAYER_FOREGROUND);
-
     armState = ARMING_FLAG(ARMED);
 
     osdResetAlarms();
 
+    backgroundLayerSupported = displayLayerSupported(osdDisplayPort, DISPLAYPORT_LAYER_BACKGROUND);
+    displayLayerSelect(osdDisplayPort, DISPLAYPORT_LAYER_FOREGROUND);
+
+    displayBeginTransaction(osdDisplayPort, DISPLAY_TRANSACTION_OPT_RESET_DRAWING);
     displayClearScreen(osdDisplayPort);
 
     osdDrawLogo(3, 1);
 
     char string_buffer[30];
     tfp_sprintf(string_buffer, "V%s", FC_VERSION_STRING);
-    displayWrite(osdDisplayPort, 20, 6, string_buffer);
+    displayWrite(osdDisplayPort, 20, 6, DISPLAYPORT_ATTR_NONE, string_buffer);
 #ifdef USE_CMS
-    displayWrite(osdDisplayPort, 7, 8,  CMS_STARTUP_HELP_TEXT1);
-    displayWrite(osdDisplayPort, 11, 9, CMS_STARTUP_HELP_TEXT2);
-    displayWrite(osdDisplayPort, 11, 10, CMS_STARTUP_HELP_TEXT3);
+    displayWrite(osdDisplayPort, 7, 8,  DISPLAYPORT_ATTR_NONE, CMS_STARTUP_HELP_TEXT1);
+    displayWrite(osdDisplayPort, 11, 9, DISPLAYPORT_ATTR_NONE, CMS_STARTUP_HELP_TEXT2);
+    displayWrite(osdDisplayPort, 11, 10, DISPLAYPORT_ATTR_NONE, CMS_STARTUP_HELP_TEXT3);
 #endif
 
 #ifdef USE_RTC_TIME
     char dateTimeBuffer[FORMATTED_DATE_TIME_BUFSIZE];
     if (osdFormatRtcDateTime(&dateTimeBuffer[0])) {
-        displayWrite(osdDisplayPort, 5, 12, dateTimeBuffer);
+        displayWrite(osdDisplayPort, 5, 12, DISPLAYPORT_ATTR_NONE, dateTimeBuffer);
     }
 #endif
-
-    displayResync(osdDisplayPort);
 
     resumeRefreshAt = micros() + (4 * REFRESH_1S);
 #ifdef USE_OSD_PROFILES
@@ -395,6 +403,25 @@ void osdInit(displayPort_t *osdDisplayPortToUse)
 
     osdElementsInit(backgroundLayerSupported);
     osdAnalyzeActiveElements();
+    displayCommitTransaction(osdDisplayPort);
+
+    osdIsReady = true;
+}
+
+void osdInit(displayPort_t *osdDisplayPortToUse)
+{
+    if (!osdDisplayPortToUse) {
+        return;
+    }
+
+    osdDisplayPort = osdDisplayPortToUse;
+#ifdef USE_CMS
+    cmsDisplayPortRegister(osdDisplayPort);
+#endif
+
+    if (displayIsReady(osdDisplayPort)) {
+        osdCompleteInitialization();
+    }
 }
 
 bool osdInitialized(void)
@@ -541,9 +568,9 @@ static void osdGetBlackboxStatusString(char * buff)
 
 static void osdDisplayStatisticLabel(uint8_t y, const char * text, const char * value)
 {
-    displayWrite(osdDisplayPort, 2, y, text);
-    displayWrite(osdDisplayPort, 20, y, ":");
-    displayWrite(osdDisplayPort, 22, y, value);
+    displayWrite(osdDisplayPort, 2, y, DISPLAYPORT_ATTR_NONE, text);
+    displayWrite(osdDisplayPort, 20, y, DISPLAYPORT_ATTR_NONE, ":");
+    displayWrite(osdDisplayPort, 22, y, DISPLAYPORT_ATTR_NONE, value);
 }
 
 /*
@@ -575,7 +602,7 @@ static bool osdDisplayStat(int statistic, uint8_t displayRow)
             tfp_sprintf(buff, "NO RTC");
         }
 
-        displayWrite(osdDisplayPort, 2, displayRow, buff);
+        displayWrite(osdDisplayPort, 2, displayRow, DISPLAYPORT_ATTR_NONE, buff);
         return true;
     }
 
@@ -779,7 +806,7 @@ static uint8_t osdShowStats(int statsRowCount)
     }
 
     if (displayLabel) {
-        displayWrite(osdDisplayPort, 2, top++, "  --- STATS ---");
+        displayWrite(osdDisplayPort, 2, top++, DISPLAYPORT_ATTR_NONE, "  --- STATS ---");
     }
 
     for (int i = 0; i < OSD_STAT_COUNT; i++) {
@@ -806,10 +833,21 @@ static void osdRefreshStats(void)
     osdShowStats(osdStatsRowCount);
 }
 
-static void osdShowArmed(void)
+static timeDelta_t osdShowArmed(void)
 {
+    timeDelta_t ret;
+
     displayClearScreen(osdDisplayPort);
-    displayWrite(osdDisplayPort, 12, 7, "ARMED");
+
+    if ((osdConfig()->logo_on_arming == OSD_LOGO_ARMING_ON) || ((osdConfig()->logo_on_arming == OSD_LOGO_ARMING_FIRST) && !ARMING_FLAG(WAS_EVER_ARMED))) {
+        osdDrawLogo(3, 1);
+        ret = osdConfig()->logo_on_arming_duration * 1e5;
+    } else {
+        ret = (REFRESH_1S / 2);
+    }
+    displayWrite(osdDisplayPort, 12, 7, DISPLAYPORT_ATTR_NONE, "ARMED");
+
+    return ret;
 }
 
 STATIC_UNIT_TESTED void osdRefresh(timeUs_t currentTimeUs)
@@ -819,18 +857,25 @@ STATIC_UNIT_TESTED void osdRefresh(timeUs_t currentTimeUs)
     static bool osdStatsVisible = false;
     static timeUs_t osdStatsRefreshTimeUs;
 
+    if (!osdIsReady) {
+        if (!displayIsReady(osdDisplayPort)) {
+            displayResync(osdDisplayPort);
+            return;
+        }
+        osdCompleteInitialization();
+    }
+
     // detect arm/disarm
     if (armState != ARMING_FLAG(ARMED)) {
         if (ARMING_FLAG(ARMED)) {
             osdStatsEnabled = false;
             osdStatsVisible = false;
             osdResetStats();
-            osdShowArmed();
-            resumeRefreshAt = currentTimeUs + (REFRESH_1S / 2);
+            resumeRefreshAt = osdShowArmed() + currentTimeUs;
         } else if (isSomeStatEnabled()
                    && !suppressStatsDisplay
                    && (!(getArmingDisableFlags() & (ARMING_DISABLED_RUNAWAY_TAKEOFF | ARMING_DISABLED_CRASH_DETECTED))
-                       || !VISIBLE(osdConfig()->item_pos[OSD_WARNINGS]))) { // suppress stats if runaway takeoff triggered disarm and WARNINGS element is visible
+                       || !VISIBLE(osdElementConfig()->item_pos[OSD_WARNINGS]))) { // suppress stats if runaway takeoff triggered disarm and WARNINGS element is visible
             osdStatsEnabled = true;
             resumeRefreshAt = currentTimeUs + (60 * REFRESH_1S);
             stats.end_voltage = getBatteryVoltage();
@@ -869,6 +914,8 @@ STATIC_UNIT_TESTED void osdRefresh(timeUs_t currentTimeUs)
     }
     lastTimeUs = currentTimeUs;
 
+    displayBeginTransaction(osdDisplayPort, DISPLAY_TRANSACTION_OPT_RESET_DRAWING);
+
     if (resumeRefreshAt) {
         if (cmp32(currentTimeUs, resumeRefreshAt) < 0) {
             // in timeout period, check sticks for activity to resume display.
@@ -893,7 +940,7 @@ STATIC_UNIT_TESTED void osdRefresh(timeUs_t currentTimeUs)
 
 #if defined(USE_ACC)
     if (sensors(SENSOR_ACC)
-       && (VISIBLE(osdConfig()->item_pos[OSD_G_FORCE]) || osdStatGetState(OSD_STAT_MAX_G_FORCE))) {
+       && (VISIBLE(osdElementConfig()->item_pos[OSD_G_FORCE]) || osdStatGetState(OSD_STAT_MAX_G_FORCE))) {
             // only calculate the G force if the element is visible or the stat is enabled
         for (int axis = 0; axis < XYZ_AXIS_COUNT; axis++) {
             const float a = accAverage[axis];
@@ -911,6 +958,7 @@ STATIC_UNIT_TESTED void osdRefresh(timeUs_t currentTimeUs)
         osdDrawElements(currentTimeUs);
         displayHeartbeat(osdDisplayPort);
     }
+    displayCommitTransaction(osdDisplayPort);
 }
 
 /*
@@ -993,5 +1041,10 @@ bool osdNeedsAccelerometer(void)
     return osdStatsNeedAccelerometer() || osdElementsNeedAccelerometer();
 }
 #endif // USE_ACC
+
+displayPort_t *osdGetDisplayPort(void)
+{
+    return osdDisplayPort;
+}
 
 #endif // USE_OSD

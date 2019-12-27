@@ -60,12 +60,20 @@
 // Misc
 //
 
-static long cmsx_menuRcConfirmBack(const OSD_Entry *self)
+static const void *cmsx_menuRcOnEnter(void)
 {
-    if (self && self->type == OME_Back)
-        return 0;
-    else
-        return -1;
+    inhibitSaveMenu();
+
+    return NULL;
+}
+
+static const void *cmsx_menuRcConfirmBack(const OSD_Entry *self)
+{
+    if (self && self->type == OME_Back) {
+        return NULL;
+    } else {
+        return MENU_CHAIN_BACK;
+    }
 }
 
 //
@@ -94,9 +102,8 @@ CMS_Menu cmsx_menuRcPreview = {
     .GUARD_text = "XRCPREV",
     .GUARD_type = OME_MENU,
 #endif
-    .onEnter = NULL,
+    .onEnter = cmsx_menuRcOnEnter,
     .onExit = cmsx_menuRcConfirmBack,
-    .checkRedirect = NULL,
     .onDisplayUpdate = NULL,
     .entries = cmsx_menuRcEntries
 };
@@ -106,17 +113,17 @@ static uint8_t motorConfig_digitalIdleOffsetValue;
 static uint8_t rxConfig_fpvCamAngleDegrees;
 static debugType_e systemConfig_debug_mode;
 
-static long cmsx_menuMiscOnEnter(void)
+static const void *cmsx_menuMiscOnEnter(void)
 {
     motorConfig_minthrottle = motorConfig()->minthrottle;
     motorConfig_digitalIdleOffsetValue = motorConfig()->digitalIdleOffsetValue / 10;
     rxConfig_fpvCamAngleDegrees = rxConfig()->fpvCamAngleDegrees;
     systemConfig_debug_mode = systemConfig()->debug_mode;
 
-    return 0;
+    return NULL;
 }
 
-static long cmsx_menuMiscOnExit(const OSD_Entry *self)
+static const void *cmsx_menuMiscOnExit(const OSD_Entry *self)
 {
     UNUSED(self);
 
@@ -125,7 +132,7 @@ static long cmsx_menuMiscOnExit(const OSD_Entry *self)
     rxConfigMutable()->fpvCamAngleDegrees = rxConfig_fpvCamAngleDegrees;
     systemConfigMutable()->debug_mode = systemConfig_debug_mode;
 
-    return 0;
+    return NULL;
 }
 
 static const OSD_Entry menuMiscEntries[]=
@@ -149,7 +156,6 @@ CMS_Menu cmsx_menuMisc = {
 #endif
     .onEnter = cmsx_menuMiscOnEnter,
     .onExit = cmsx_menuMiscOnExit,
-    .checkRedirect = NULL,
     .onDisplayUpdate = NULL,
     .entries = menuMiscEntries
 };

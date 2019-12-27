@@ -64,9 +64,11 @@ STATIC_UNIT_TESTED crsfFrame_t crsfChannelDataFrame;
 STATIC_UNIT_TESTED uint32_t crsfChannelData[CRSF_MAX_CHANNEL];
 
 static serialPort_t *serialPort;
-static uint32_t crsfFrameStartAtUs = 0;
+static timeUs_t crsfFrameStartAtUs = 0;
 static uint8_t telemetryBuf[CRSF_FRAME_SIZE_MAX];
 static uint8_t telemetryBufLen = 0;
+
+static timeUs_t lastRcFrameTimeUs = 0;
 
 /*
  * CRSF protocol
@@ -231,13 +233,13 @@ STATIC_UNIT_TESTED void crsfDataReceive(uint16_t c, void *data)
     UNUSED(data);
 
     static uint8_t crsfFramePosition = 0;
-    const uint32_t currentTimeUs = micros();
+    const timeUs_t currentTimeUs = microsISR();
 
 #ifdef DEBUG_CRSF_PACKETS
     debug[2] = currentTimeUs - crsfFrameStartAtUs;
 #endif
 
-    if (currentTimeUs > crsfFrameStartAtUs + CRSF_TIME_NEEDED_PER_FRAME_US) {
+    if (cmpTimeUs(currentTimeUs, crsfFrameStartAtUs) > CRSF_TIME_NEEDED_PER_FRAME_US) {
         // We've received a character after max time needed to complete a frame,
         // so this must be the start of a new frame.
         crsfFramePosition = 0;
@@ -260,6 +262,7 @@ STATIC_UNIT_TESTED void crsfDataReceive(uint16_t c, void *data)
                 {
                     case CRSF_FRAMETYPE_RC_CHANNELS_PACKED:
                         if (crsfFrame.frame.deviceAddress == CRSF_ADDRESS_FLIGHT_CONTROLLER) {
+                            lastRcFrameTimeUs = currentTimeUs;
                             crsfFrameDone = true;
                             memcpy(&crsfChannelDataFrame, &crsfFrame, sizeof(crsfFrame));
                         }
@@ -369,6 +372,13 @@ void crsfRxSendTelemetryData(void)
     }
 }
 
+static timeUs_t crsfFrameTimeUs(void)
+{
+    const timeUs_t result = lastRcFrameTimeUs;
+    lastRcFrameTimeUs = 0;
+    return result;
+}
+
 bool crsfRxInit(const rxConfig_t *rxConfig, rxRuntimeState_t *rxRuntimeState)
 {
     for (int ii = 0; ii < CRSF_MAX_CHANNEL; ++ii) {
@@ -380,6 +390,7 @@ bool crsfRxInit(const rxConfig_t *rxConfig, rxRuntimeState_t *rxRuntimeState)
 
     rxRuntimeState->rcReadRawFn = crsfReadRawRC;
     rxRuntimeState->rcFrameStatusFn = crsfFrameStatus;
+    rxRuntimeState->rcFrameTimeUsFn = crsfFrameTimeUs;
 
     const serialPortConfig_t *portConfig = findSerialPortConfig(FUNCTION_RX_SERIAL);
     if (!portConfig) {

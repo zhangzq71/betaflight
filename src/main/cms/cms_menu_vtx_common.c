@@ -43,7 +43,7 @@
 static char statusLine1[MAX_STATUS_LINE_LENGTH] = "";
 static char statusLine2[MAX_STATUS_LINE_LENGTH] = "";
 
-static long setStatusMessage(void)
+static const void *setStatusMessage(void)
 {
     vtxDevice_t *device = vtxCommonDevice();
 
@@ -61,14 +61,36 @@ static long setStatusMessage(void)
             tfp_sprintf(&statusLine1[0], "UNKNOWN VTX TYPE");
         }
     }
-    return 0;
+    return NULL;
 }
+
+static const OSD_Entry vtxErrorMenuEntries[] =
+{
+    { "",     OME_Label, NULL, statusLine1,  DYNAMIC },
+    { "",     OME_Label, NULL, statusLine2,  DYNAMIC },
+    { "",     OME_Label, NULL, NULL, 0 },
+    { "BACK", OME_Back,  NULL, NULL, 0 },
+    { NULL,   OME_END,   NULL, NULL, 0 }
+};
+
+static CMS_Menu cmsx_menuVtxError = {
+#ifdef CMS_MENU_DEBUG
+    .GUARD_text = "XVTXERROR",
+    .GUARD_type = OME_MENU,
+#endif
+    .onEnter = setStatusMessage,
+    .onExit = NULL,
+    .onDisplayUpdate = NULL,
+    .entries = vtxErrorMenuEntries,
+};
 
 // Redirect to the proper menu based on the vtx device type
 // If device isn't valid or not a supported type then don't
 // redirect and instead display a local informational menu.
-static const void *vtxMenuRedirect(void)
+const void *cmsSelectVtx(displayPort_t *pDisplay, const void *ptr)
 {
+    UNUSED(ptr);
+
     vtxDevice_t *device = vtxCommonDevice();
 
     if (device) {
@@ -78,44 +100,32 @@ static const void *vtxMenuRedirect(void)
         
 #if defined(USE_VTX_RTC6705)
         case VTXDEV_RTC6705:
-            return &cmsx_menuVtxRTC6705;
+            cmsMenuChange(pDisplay, &cmsx_menuVtxRTC6705);
+
+            break;
 #endif
 #if defined(USE_VTX_SMARTAUDIO)
         case VTXDEV_SMARTAUDIO:
-            return &cmsx_menuVtxSmartAudio;
+            cmsMenuChange(pDisplay, &cmsx_menuVtxSmartAudio);
+
+            break;
 #endif
 #if defined(USE_VTX_TRAMP)
         case VTXDEV_TRAMP:
-            return &cmsx_menuVtxTramp;
+            cmsMenuChange(pDisplay, &cmsx_menuVtxTramp);
+
+            break;
 #endif
 
         default:
-            return NULL;
+            cmsMenuChange(pDisplay, &cmsx_menuVtxError);
+
+            break;
         }
+    } else {
+        cmsMenuChange(pDisplay, &cmsx_menuVtxError);
     }
 
     return NULL;
 }
-
-static const OSD_Entry vtxRedirectMenuEntries[] =
-{
-    { "",     OME_Label, NULL, statusLine1,  DYNAMIC },
-    { "",     OME_Label, NULL, statusLine2,  DYNAMIC },
-    { "",     OME_Label, NULL, NULL, 0 },
-    { "BACK", OME_Back,  NULL, NULL, 0 },
-    { NULL,   OME_END,   NULL, NULL, 0 }
-};
-
-CMS_Menu cmsx_menuVtxRedirect = {
-#ifdef CMS_MENU_DEBUG
-    .GUARD_text = "XVTXREDIRECT",
-    .GUARD_type = OME_MENU,
-#endif
-    .onEnter = setStatusMessage,
-    .onExit = NULL,
-    .checkRedirect = vtxMenuRedirect,
-    .onDisplayUpdate = NULL,
-    .entries = vtxRedirectMenuEntries,
-};
-
 #endif

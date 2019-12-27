@@ -76,17 +76,18 @@ static uint8_t telemetryBuf[SRXL_FRAME_SIZE_MAX];
 static uint8_t telemetryBufLen = 0;
 #endif
 
+static timeUs_t lastRcFrameTimeUs = 0;
+
 // Receive ISR callback
 static void spektrumDataReceive(uint16_t c, void *data)
 {
     UNUSED(data);
 
-    uint32_t spekTime, spekTimeInterval;
-    static uint32_t spekTimeLast = 0;
+    static timeUs_t spekTimeLast = 0;
     static uint8_t spekFramePosition = 0;
 
-    spekTime = micros();
-    spekTimeInterval = spekTime - spekTimeLast;
+    const timeUs_t spekTime = microsISR();
+    const timeUs_t spekTimeInterval = cmpTimeUs(spekTime, spekTimeLast);
     spekTimeLast = spekTime;
 
     if (spekTimeInterval > SPEKTRUM_NEEDED_FRAME_INTERVAL) {
@@ -98,6 +99,7 @@ static void spektrumDataReceive(uint16_t c, void *data)
         if (spekFramePosition < SPEK_FRAME_SIZE) {
             rcFrameComplete = false;
         } else {
+            lastRcFrameTimeUs = spekTime;
             rcFrameComplete = true;
         }
     }
@@ -341,6 +343,13 @@ void srxlRxWriteTelemetryData(const void *data, int len)
 }
 #endif
 
+static timeUs_t spektrumFrameTimeUs(void)
+{
+    const timeUs_t result = lastRcFrameTimeUs;
+    lastRcFrameTimeUs = 0;
+    return result;
+}
+
 bool spektrumInit(const rxConfig_t *rxConfig, rxRuntimeState_t *rxRuntimeState)
 {
     rxRuntimeStatePtr = rxRuntimeState;
@@ -388,6 +397,7 @@ bool spektrumInit(const rxConfig_t *rxConfig, rxRuntimeState_t *rxRuntimeState)
 
     rxRuntimeState->rcReadRawFn = spektrumReadRawRC;
     rxRuntimeState->rcFrameStatusFn = spektrumFrameStatus;
+    rxRuntimeState->rcFrameTimeUsFn = spektrumFrameTimeUs;
 #if defined(USE_TELEMETRY_SRXL)
     rxRuntimeState->rcProcessFrameFn = spektrumProcessFrame;
 #endif

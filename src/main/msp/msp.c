@@ -57,6 +57,7 @@
 #include "drivers/io.h"
 #include "drivers/max7456.h"
 #include "drivers/motor.h"
+#include "drivers/osd.h"
 #include "drivers/pwm_output.h"
 #include "drivers/sdcard.h"
 #include "drivers/serial.h"
@@ -171,6 +172,19 @@ typedef enum {
     MSP_FLASHFS_FLAG_SUPPORTED  = 2
 } mspFlashFsFlags_e;
 
+typedef enum {
+    MSP_PASSTHROUGH_ESC_SIMONK = PROTOCOL_SIMONK,
+    MSP_PASSTHROUGH_ESC_BLHELI = PROTOCOL_BLHELI,
+    MSP_PASSTHROUGH_ESC_KISS = PROTOCOL_KISS,
+    MSP_PASSTHROUGH_ESC_KISSALL = PROTOCOL_KISSALL,
+    MSP_PASSTHROUGH_ESC_CASTLE = PROTOCOL_CASTLE,
+
+    MSP_PASSTHROUGH_SERIAL_ID = 0xFD,
+    MSP_PASSTHROUGH_SERIAL_FUNCTION_ID = 0xFE,
+
+    MSP_PASSTHROUGH_ESC_4WAY = 0xFF,
+} mspPassthroughType_e;
+
 #define RATEPROFILE_MASK (1 << 7)
 
 #define RTC_NOT_SUPPORTED 0xff
@@ -208,33 +222,73 @@ static bool mspIsMspArmingEnabled(void)
     return mspArmingDisableFlags == 0;
 }
 
-#ifdef USE_SERIAL_4WAY_BLHELI_INTERFACE
-#define ESC_4WAY 0xff
+#define MSP_PASSTHROUGH_ESC_4WAY 0xff
 
-uint8_t escMode;
-uint8_t escPortIndex;
+static uint8_t mspPassthroughMode;
+static uint8_t mspPassthroughArgument;
 
 #ifdef USE_ESCSERIAL
 static void mspEscPassthroughFn(serialPort_t *serialPort)
 {
-    escEnablePassthrough(serialPort, &motorConfig()->dev, escPortIndex, escMode);
+    escEnablePassthrough(serialPort, &motorConfig()->dev, mspPassthroughArgument, mspPassthroughMode);
 }
 #endif
 
-static void mspFc4waySerialCommand(sbuf_t *dst, sbuf_t *src, mspPostProcessFnPtr *mspPostProcessFn)
+static serialPort_t *mspFindPassthroughSerialPort(void)
+{
+    serialPortUsage_t *portUsage = NULL;
+
+    switch (mspPassthroughMode) {
+    case MSP_PASSTHROUGH_SERIAL_ID:
+    {
+        portUsage = findSerialPortUsageByIdentifier(mspPassthroughArgument);
+        break;
+    }
+    case MSP_PASSTHROUGH_SERIAL_FUNCTION_ID:
+    {
+        const serialPortConfig_t *portConfig = findSerialPortConfig(1 << mspPassthroughArgument);
+        if (portConfig) {
+            portUsage = findSerialPortUsageByIdentifier(portConfig->identifier);
+        }
+        break;
+    }
+    }
+    return portUsage ? portUsage->serialPort : NULL;
+}
+
+static void mspSerialPassthroughFn(serialPort_t *serialPort)
+{
+    serialPort_t *passthroughPort = mspFindPassthroughSerialPort();
+    if (passthroughPort && serialPort) {
+        serialPassthrough(passthroughPort, serialPort, NULL, NULL);
+    }
+}
+
+static void mspFcSetPassthroughCommand(sbuf_t *dst, sbuf_t *src, mspPostProcessFnPtr *mspPostProcessFn)
 {
     const unsigned int dataSize = sbufBytesRemaining(src);
     if (dataSize == 0) {
         // Legacy format
-
-        escMode = ESC_4WAY;
+        mspPassthroughMode = MSP_PASSTHROUGH_ESC_4WAY;
     } else {
-        escMode = sbufReadU8(src);
-        escPortIndex = sbufReadU8(src);
+        mspPassthroughMode = sbufReadU8(src);
+        mspPassthroughArgument = sbufReadU8(src);
     }
 
-    switch (escMode) {
-    case ESC_4WAY:
+    switch (mspPassthroughMode) {
+    case MSP_PASSTHROUGH_SERIAL_ID:
+    case MSP_PASSTHROUGH_SERIAL_FUNCTION_ID:
+        if (mspFindPassthroughSerialPort()) {
+            if (mspPostProcessFn) {
+                *mspPostProcessFn = mspSerialPassthroughFn;
+            }
+            sbufWriteU8(dst, 1);
+        } else {
+            sbufWriteU8(dst, 0);
+        }
+        break;
+#ifdef USE_SERIAL_4WAY_BLHELI_INTERFACE
+    case MSP_PASSTHROUGH_ESC_4WAY:
         // get channel number
         // switch all motor lines HI
         // reply with the count of ESC found
@@ -246,12 +300,12 @@ static void mspFc4waySerialCommand(sbuf_t *dst, sbuf_t *src, mspPostProcessFnPtr
         break;
 
 #ifdef USE_ESCSERIAL
-    case PROTOCOL_SIMONK:
-    case PROTOCOL_BLHELI:
-    case PROTOCOL_KISS:
-    case PROTOCOL_KISSALL:
-    case PROTOCOL_CASTLE:
-        if (escPortIndex < getMotorCount() || (escMode == PROTOCOL_KISS && escPortIndex == ALL_MOTORS)) {
+    case MSP_PASSTHROUGH_ESC_SIMONK:
+    case MSP_PASSTHROUGH_ESC_BLHELI:
+    case MSP_PASSTHROUGH_ESC_KISS:
+    case MSP_PASSTHROUGH_ESC_KISSALL:
+    case MSP_PASSTHROUGH_ESC_CASTLE:
+        if (mspPassthroughArgument < getMotorCount() || (mspPassthroughMode == MSP_PASSTHROUGH_ESC_KISS && mspPassthroughArgument == ALL_MOTORS)) {
             sbufWriteU8(dst, 1);
 
             if (mspPostProcessFn) {
@@ -261,12 +315,12 @@ static void mspFc4waySerialCommand(sbuf_t *dst, sbuf_t *src, mspPostProcessFnPtr
             break;
         }
         FALLTHROUGH;
-#endif
+#endif // USE_ESCSERIAL
+#endif //USE_SERIAL_4WAY_BLHELI_INTERFACE
     default:
         sbufWriteU8(dst, 0);
     }
 }
-#endif //USE_SERIAL_4WAY_BLHELI_INTERFACE
 
 // TODO: Remove the pragma once this is called from unconditional code
 #pragma GCC diagnostic ignored "-Wunused-function"
@@ -837,7 +891,7 @@ static bool mspCommonProcessOutCommand(uint8_t cmdMSP, sbuf_t *dst, mspPostProce
 
         // Element position and visibility
         for (int i = 0; i < OSD_ITEM_COUNT; i++) {
-            sbufWriteU16(dst, osdConfig()->item_pos[i]);
+            sbufWriteU16(dst, osdElementConfig()->item_pos[i]);
         }
 
         // Post flight statistics
@@ -876,6 +930,11 @@ static bool mspCommonProcessOutCommand(uint8_t cmdMSP, sbuf_t *dst, mspPostProce
 #else
         sbufWriteU8(dst, 0);
 #endif // USE_OSD_STICK_OVERLAY
+
+        // API >= 1.43
+        // Add the camera frame element width/height
+        sbufWriteU8(dst, osdConfig()->camera_frame_width);
+        sbufWriteU8(dst, osdConfig()->camera_frame_height);
 
 #endif // USE_OSD
         break;
@@ -2961,7 +3020,8 @@ static mspResult_e mspProcessInCommand(mspDescriptor_t srcDesc, uint8_t cmdMSP, 
             while (remainingPortsInPacket--) {
                 uint8_t identifier = sbufReadU8(src);
 
-                serialPortConfig_t *portConfig = serialFindPortConfiguration(identifier);
+                serialPortConfig_t *portConfig = serialFindPortConfigurationMutable(identifier);
+
                 if (!portConfig) {
                     return MSP_RESULT_ERROR;
                 }
@@ -3257,6 +3317,13 @@ static mspResult_e mspCommonProcessInCommand(mspDescriptor_t srcDesc, uint8_t cm
 #endif // USE_OSD_STICK_OVERLAY
 
                 }
+
+                if (sbufBytesRemaining(src) >= 2) {
+                    // API >= 1.43
+                    // OSD camera frame element width/height
+                    osdConfigMutable()->camera_frame_width = sbufReadU8(src);
+                    osdConfigMutable()->camera_frame_height = sbufReadU8(src);
+                }
 #endif
             } else if ((int8_t)addr == -2) {
 #if defined(USE_OSD)
@@ -3280,7 +3347,7 @@ static mspResult_e mspCommonProcessInCommand(mspDescriptor_t srcDesc, uint8_t cm
                     osdStatSetState(addr, (value != 0));
                 } else if (addr < OSD_ITEM_COUNT) {
                     /* Set element positions */
-                    osdConfigMutable()->item_pos[addr] = value;
+                    osdElementConfigMutable()->item_pos[addr] = value;
                     osdAnalyzeActiveElements();
                 } else {
                   return MSP_RESULT_ERROR;
@@ -3293,22 +3360,42 @@ static mspResult_e mspCommonProcessInCommand(mspDescriptor_t srcDesc, uint8_t cm
         break;
 
     case MSP_OSD_CHAR_WRITE:
-#ifdef USE_MAX7456
         {
-            uint8_t font_data[64];
-            const uint8_t addr = sbufReadU8(src);
-            for (int i = 0; i < 54; i++) {
-                font_data[i] = sbufReadU8(src);
+            osdCharacter_t chr;
+            size_t osdCharacterBytes;
+            uint16_t addr;
+            if (dataSize >= OSD_CHAR_VISIBLE_BYTES + 2) {
+                if (dataSize >= OSD_CHAR_BYTES + 2) {
+                    // 16 bit address, full char with metadata
+                    addr = sbufReadU16(src);
+                    osdCharacterBytes = OSD_CHAR_BYTES;
+                } else if (dataSize >= OSD_CHAR_BYTES + 1) {
+                    // 8 bit address, full char with metadata
+                    addr = sbufReadU8(src);
+                    osdCharacterBytes = OSD_CHAR_BYTES;
+                } else {
+                    // 16 bit character address, only visible char bytes
+                    addr = sbufReadU16(src);
+                    osdCharacterBytes = OSD_CHAR_VISIBLE_BYTES;
+                }
+            } else {
+                // 8 bit character address, only visible char bytes
+                addr = sbufReadU8(src);
+                osdCharacterBytes = OSD_CHAR_VISIBLE_BYTES;
             }
-            // !!TODO - replace this with a device independent implementation
-            if (!max7456WriteNvm(addr, font_data)) {
+            for (unsigned ii = 0; ii < MIN(osdCharacterBytes, sizeof(chr.data)); ii++) {
+                chr.data[ii] = sbufReadU8(src);
+            }
+            displayPort_t *osdDisplayPort = osdGetDisplayPort();
+            if (!osdDisplayPort) {
+                return MSP_RESULT_ERROR;
+            }
+
+            if (!displayWriteFontCharacter(osdDisplayPort, addr, &chr)) {
                 return MSP_RESULT_ERROR;
             }
         }
         break;
-#else
-        return MSP_RESULT_ERROR;
-#endif
 #endif // OSD
 
     default:
@@ -3335,11 +3422,9 @@ mspResult_e mspFcProcessCommand(mspDescriptor_t srcDesc, mspPacket_t *cmd, mspPa
         ret = MSP_RESULT_ACK;
     } else if ((ret = mspFcProcessOutCommandWithArg(srcDesc, cmdMSP, src, dst, mspPostProcessFn)) != MSP_RESULT_CMD_UNKNOWN) {
         /* ret */;
-#ifdef USE_SERIAL_4WAY_BLHELI_INTERFACE
-    } else if (cmdMSP == MSP_SET_4WAY_IF) {
-        mspFc4waySerialCommand(dst, src, mspPostProcessFn);
+    } else if (cmdMSP == MSP_SET_PASSTHROUGH) {
+        mspFcSetPassthroughCommand(dst, src, mspPostProcessFn);
         ret = MSP_RESULT_ACK;
-#endif
 #ifdef USE_FLASHFS
     } else if (cmdMSP == MSP_DATAFLASH_READ) {
         mspFcDataFlashReadCommand(dst, src);

@@ -1238,14 +1238,14 @@ static void cliSerial(char *cmdline)
     serialPortConfig_t portConfig;
     memset(&portConfig, 0 , sizeof(portConfig));
 
-    serialPortConfig_t *currentConfig;
 
     uint8_t validArgumentCount = 0;
 
     const char *ptr = cmdline;
 
     int val = atoi(ptr++);
-    currentConfig = serialFindPortConfiguration(val);
+    serialPortConfig_t *currentConfig = serialFindPortConfigurationMutable(val);
+
     if (currentConfig) {
         portConfig.identifier = val;
         validArgumentCount++;
@@ -1253,8 +1253,8 @@ static void cliSerial(char *cmdline)
 
     ptr = nextArg(ptr);
     if (ptr) {
-        val = atoi(ptr);
-        portConfig.functionMask = val & 0xFFFF;
+        val = strtoul(ptr, NULL, 10);
+        portConfig.functionMask = val;
         validArgumentCount++;
     }
 
@@ -2583,7 +2583,7 @@ static void cliVtx(char *cmdline)
             ptr = nextArg(ptr);
             if (ptr) {
                 val = atoi(ptr);
-                if (val >= 0 && val <= vtxTableBandCount) {
+                if (val >= 0 && val <= vtxTableConfig()->bands) {
                     cac->band = val;
                     validArgumentCount++;
                 }
@@ -2591,7 +2591,7 @@ static void cliVtx(char *cmdline)
             ptr = nextArg(ptr);
             if (ptr) {
                 val = atoi(ptr);
-                if (val >= 0 && val <= vtxTableChannelCount) {
+                if (val >= 0 && val <= vtxTableConfig()->channels) {
                     cac->channel = val;
                     validArgumentCount++;
                 }
@@ -2599,7 +2599,7 @@ static void cliVtx(char *cmdline)
             ptr = nextArg(ptr);
             if (ptr) {
                 val = atoi(ptr);
-                if (val >= 0 && val < vtxTablePowerLevels) {
+                if (val >= 0 && val <= vtxTableConfig()->powerLevels) {
                     cac->power= val;
                     validArgumentCount++;
                 }
@@ -2826,7 +2826,7 @@ static void cliVtxTable(char *cmdline)
         tok = strtok_r(NULL, " ", &saveptr);
 
         int channels = atoi(tok);
-        if (channels < 0 || channels > VTX_TABLE_MAX_BANDS) {
+        if (channels < 0 || channels > VTX_TABLE_MAX_CHANNELS) {
             cliPrintErrorLinef("INVALID CHANNEL COUNT (SHOULD BE BETWEEN 0 AND %d)", VTX_TABLE_MAX_CHANNELS);
             return;
         }
@@ -4807,25 +4807,28 @@ static void cliRcSmoothing(char *cmdline)
     cliPrint("# RC Smoothing Type: ");
     if (rxConfig()->rc_smoothing_type == RC_SMOOTHING_TYPE_FILTER) {
         cliPrintLine("FILTER");
-        uint16_t avgRxFrameMs = rcSmoothingData->averageFrameTimeUs;
         if (rcSmoothingAutoCalculate()) {
+            const uint16_t avgRxFrameUs = rcSmoothingData->averageFrameTimeUs;
             cliPrint("# Detected RX frame rate: ");
-            if (avgRxFrameMs == 0) {
+            if (avgRxFrameUs == 0) {
                 cliPrintLine("NO SIGNAL");
             } else {
-                cliPrintLinef("%d.%dms", avgRxFrameMs / 1000, avgRxFrameMs % 1000);
+                cliPrintLinef("%d.%03dms", avgRxFrameUs / 1000, avgRxFrameUs % 1000);
             }
         }
-        cliPrint("# Input filter type: ");
-        cliPrintLinef(lookupTables[TABLE_RC_SMOOTHING_INPUT_TYPE].values[rcSmoothingData->inputFilterType]);
+        cliPrintLinef("# Input filter type: %s", lookupTables[TABLE_RC_SMOOTHING_INPUT_TYPE].values[rcSmoothingData->inputFilterType]);
         cliPrintf("# Active input cutoff: %dhz ", rcSmoothingData->inputCutoffFrequency);
         if (rcSmoothingData->inputCutoffSetting == 0) {
             cliPrintLine("(auto)");
         } else {
             cliPrintLine("(manual)");
         }
-        cliPrint("# Derivative filter type: ");
-        cliPrintLinef(lookupTables[TABLE_RC_SMOOTHING_DERIVATIVE_TYPE].values[rcSmoothingData->derivativeFilterType]);
+        cliPrintf("# Derivative filter type: %s", lookupTables[TABLE_RC_SMOOTHING_DERIVATIVE_TYPE].values[rcSmoothingData->derivativeFilterType]);
+        if (rcSmoothingData->derivativeFilterTypeSetting == RC_SMOOTHING_DERIVATIVE_AUTO) {
+            cliPrintLine(" (auto)");
+        } else {
+            cliPrintLinefeed();
+        }
         cliPrintf("# Active derivative cutoff: %dhz (", rcSmoothingData->derivativeCutoffFrequency);
         if (rcSmoothingData->derivativeFilterType == RC_SMOOTHING_DERIVATIVE_OFF) {
             cliPrintLine("off)");
@@ -5734,7 +5737,7 @@ static void cliTimer(char *cmdline)
 
     pch = strtok_r(NULL, " ", &saveptr);
     if (pch) {
-        int timerIndex;
+        int timerIndex = TIMER_INDEX_UNDEFINED;
         if (strcasecmp(pch, "list") == 0) {
             /* output the list of available options */
             const timerHardware_t *timer;
@@ -5748,8 +5751,6 @@ static void cliTimer(char *cmdline)
             }
 
             return;
-        } else if (strcasecmp(pch, "none") == 0) {
-            timerIndex = TIMER_INDEX_UNDEFINED;
         } else if (strncasecmp(pch, "af", 2) == 0) {
             unsigned alternateFunction = atoi(&pch[2]);
 
@@ -5767,7 +5768,7 @@ static void cliTimer(char *cmdline)
 
                 return;
             }
-        } else {
+        } else if (strcasecmp(pch, "none") != 0) {
             timerIndex = atoi(pch);
 
             const timerHardware_t *timer = timerGetByTagAndIndex(ioTag, timerIndex + 1);
@@ -5847,22 +5848,21 @@ static void cliResource(char *cmdline)
         return;
     }
 
-    uint8_t resourceIndex = 0;
-    int index = 0;
-    for (resourceIndex = 0; ; resourceIndex++) {
+    unsigned resourceIndex = 0;
+    for (; ; resourceIndex++) {
         if (resourceIndex >= ARRAYLEN(resourceTable)) {
             cliPrintErrorLinef("INVALID RESOURCE NAME: '%s'", pch);
             return;
         }
 
-    const char * resourceName = ownerNames[resourceTable[resourceIndex].owner];
+        const char *resourceName = ownerNames[resourceTable[resourceIndex].owner];
         if (strncasecmp(pch, resourceName, strlen(resourceName)) == 0) {
             break;
         }
     }
 
     pch = strtok_r(NULL, " ", &saveptr);
-    index = atoi(pch);
+    int index = atoi(pch);
 
     if (resourceTable[resourceIndex].maxIndex > 0 || index > 0) {
         if (index <= 0 || index > MAX_RESOURCE_INDEX(resourceTable[resourceIndex].maxIndex)) {
@@ -6097,12 +6097,12 @@ static void printConfig(char *cmdline, bool doDiff)
 
             printRxRange(dumpMask, rxChannelRangeConfigs_CopyArray, rxChannelRangeConfigs(0), "rxrange");
 
-#ifdef USE_VTX_CONTROL
-            printVtx(dumpMask, &vtxConfig_Copy, vtxConfig(), "vtx");
-#endif
-
 #ifdef USE_VTX_TABLE
             printVtxTable(dumpMask, &vtxTableConfig_Copy, vtxTableConfig(), "vtxtable");
+#endif
+
+#ifdef USE_VTX_CONTROL
+            printVtx(dumpMask, &vtxConfig_Copy, vtxConfig(), "vtx");
 #endif
 
             printRxFailsafe(dumpMask, rxFailsafeChannelConfigs_CopyArray, rxFailsafeChannelConfigs(0), "rxfail");
@@ -6315,7 +6315,7 @@ const clicmd_t cmdTable[] = {
 #if defined(USE_GYRO_REGISTER_DUMP) && !defined(SIMULATOR_BUILD)
     CLI_COMMAND_DEF("gyroregisters", "dump gyro config registers contents", NULL, cliDumpGyroRegisters),
 #endif
-    CLI_COMMAND_DEF("help", NULL, NULL, cliHelp),
+    CLI_COMMAND_DEF("help", "display command help", "[search string]", cliHelp),
 #ifdef USE_LED_STRIP_STATUS_MODE
         CLI_COMMAND_DEF("led", "configure leds", NULL, cliLed),
 #endif
@@ -6400,19 +6400,38 @@ const clicmd_t cmdTable[] = {
 
 static void cliHelp(char *cmdline)
 {
-    UNUSED(cmdline);
+    bool anyMatches = false;
 
     for (uint32_t i = 0; i < ARRAYLEN(cmdTable); i++) {
-        cliPrint(cmdTable[i].name);
+        bool printEntry = false;
+        if (isEmpty(cmdline)) {
+            printEntry = true;
+        } else {
+            if (strcasestr(cmdTable[i].name, cmdline)
 #ifndef MINIMAL_CLI
-        if (cmdTable[i].description) {
-            cliPrintf(" - %s", cmdTable[i].description);
-        }
-        if (cmdTable[i].args) {
-            cliPrintf("\r\n\t%s", cmdTable[i].args);
-        }
+                || strcasestr(cmdTable[i].description, cmdline)
 #endif
-        cliPrintLinefeed();
+               ) {
+                printEntry = true;
+            }
+        } 
+
+        if (printEntry) {
+            anyMatches = true;
+            cliPrint(cmdTable[i].name);
+#ifndef MINIMAL_CLI
+            if (cmdTable[i].description) {
+                cliPrintf(" - %s", cmdTable[i].description);
+            }
+            if (cmdTable[i].args) {
+                cliPrintf("\r\n\t%s", cmdTable[i].args);
+            }
+#endif
+            cliPrintLinefeed();
+        }
+    }
+    if (!isEmpty(cmdline) && !anyMatches) {
+        cliPrintErrorLinef("NO MATCHES FOR '%s'", cmdline);
     }
 }
 

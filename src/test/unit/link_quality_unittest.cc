@@ -33,7 +33,7 @@ extern "C" {
     #include "common/printf.h"
     #include "common/streambuf.h"
 
-    #include "drivers/max7456_symbols.h"
+    #include "drivers/osd_symbols.h"
     #include "drivers/persistent.h"
     #include "drivers/serial.h"
     #include "drivers/system.h"
@@ -230,7 +230,7 @@ TEST(LQTest, TestElement_LQ_SOURCE_NONE_SAMPLES)
 
     linkQualitySource = LQ_SOURCE_NONE;
 
-    osdConfigMutable()->item_pos[OSD_LINK_QUALITY] = OSD_POS(8, 1) | OSD_PROFILE_1_FLAG;
+    osdElementConfigMutable()->item_pos[OSD_LINK_QUALITY] = OSD_POS(8, 1) | OSD_PROFILE_1_FLAG;
     osdConfigMutable()->link_quality_alarm = 0;
 
     osdAnalyzeActiveElements();
@@ -270,7 +270,7 @@ TEST(LQTest, TestElement_LQ_SOURCE_NONE_VALUES)
 
     linkQualitySource = LQ_SOURCE_NONE;
 
-    osdConfigMutable()->item_pos[OSD_LINK_QUALITY] = OSD_POS(8, 1) | OSD_PROFILE_1_FLAG;
+    osdElementConfigMutable()->item_pos[OSD_LINK_QUALITY] = OSD_POS(8, 1) | OSD_PROFILE_1_FLAG;
     osdConfigMutable()->link_quality_alarm = 0;
 
     osdAnalyzeActiveElements();
@@ -301,7 +301,7 @@ TEST(LQTest, TestElementLQ_PROTOCOL_CRSF_VALUES)
     // given
     linkQualitySource = LQ_SOURCE_RX_PROTOCOL_CRSF;
 
-    osdConfigMutable()->item_pos[OSD_LINK_QUALITY] = OSD_POS(8, 1) | OSD_PROFILE_1_FLAG;
+    osdElementConfigMutable()->item_pos[OSD_LINK_QUALITY] = OSD_POS(8, 1) | OSD_PROFILE_1_FLAG;
     osdConfigMutable()->link_quality_alarm = 0;
 
     osdAnalyzeActiveElements();
@@ -336,7 +336,7 @@ TEST(LQTest, TestLQAlarm)
     // and
     // the following OSD elements are visible
 
-    osdConfigMutable()->item_pos[OSD_LINK_QUALITY] = OSD_POS(8, 1)  | OSD_PROFILE_1_FLAG;
+    osdElementConfigMutable()->item_pos[OSD_LINK_QUALITY] = OSD_POS(8, 1)  | OSD_PROFILE_1_FLAG;
 
     // and
     // this set of alarm values
@@ -406,6 +406,10 @@ extern "C" {
         return simulationTime;
     }
 
+    uint32_t microsISR() {
+        return micros();
+    }
+
     uint32_t millis() {
         return micros() / 1000;
     }
@@ -427,7 +431,7 @@ extern "C" {
     bool isBlackboxDeviceWorking() { return true; }
     bool isBlackboxDeviceFull() { return false; }
     serialPort_t *openSerialPort(serialPortIdentifier_e, serialPortFunction_e, serialReceiveCallbackPtr, void *, uint32_t, portMode_e, portOptions_e) {return NULL;}
-    serialPortConfig_t *findSerialPortConfig(serialPortFunction_e ) {return NULL;}
+    const serialPortConfig_t *findSerialPortConfig(serialPortFunction_e ) {return NULL;}
     bool telemetryCheckRxPortShared(const serialPortConfig_t *) {return false;}
     bool cmsDisplayPortRegister(displayPort_t *) { return false; }
     uint16_t getCoreTemperatureCelsius(void) { return 0; }
@@ -443,7 +447,7 @@ extern "C" {
     void persistentObjectWrite(persistentObjectId_e, uint32_t) {}
     void failsafeOnRxSuspend(uint32_t ) {}
     void failsafeOnRxResume(void) {}
-    void featureDisable(uint32_t) { }
+    void featureDisableImmediate(uint32_t) { }
     bool rxMspFrameComplete(void) { return false; }
     bool isPPMDataBeingReceived(void) { return false; }
     bool isPWMDataBeingReceived(void) { return false; }

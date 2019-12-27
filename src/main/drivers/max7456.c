@@ -36,8 +36,9 @@
 #include "drivers/io.h"
 #include "drivers/light_led.h"
 #include "drivers/max7456.h"
-#include "drivers/max7456_symbols.h"
 #include "drivers/nvic.h"
+#include "drivers/osd.h"
+#include "drivers/osd_symbols.h"
 #include "drivers/time.h"
 
 
@@ -774,7 +775,7 @@ void max7456DrawScreen(void)
 
 static void max7456DrawScreenSlow(void)
 {
-    bool escapeCharFound;
+    bool escapeCharFound = false;
     uint8_t *buffer = getActiveLayerBuffer();
 
     __spiBusTransactionBegin(busdev);

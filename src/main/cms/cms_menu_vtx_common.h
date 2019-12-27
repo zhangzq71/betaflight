@@ -23,4 +23,4 @@
 #include "cms/cms.h"
 #include "cms/cms_types.h"
 
-extern CMS_Menu cmsx_menuVtxRedirect;
+const void *cmsSelectVtx(displayPort_t *pDisplay, const void *ptr);
